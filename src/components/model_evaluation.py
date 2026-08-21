@@ -17,7 +17,7 @@ from src.entity.artifact_entity import (
     ModelEvaluationArtifacts
 )
 
-from src.configurations.gcloud_syncer import GCloudSync
+from src.configurations.s3_syncer import S3Sync
 from src.constants import DEVICE
 from src.utils.main_utils import load_object
 
@@ -43,7 +43,11 @@ class ModelEvaluation:
             data_transformation_artifacts
         )
 
-        self.gcloud = GCloudSync()
+        # ========================================================
+        # AWS S3
+        # ========================================================
+
+        self.s3 = S3Sync()
 
     # ============================================================
     # CHECK WHETHER PREVIOUS BEST MODEL EXISTS
@@ -55,7 +59,7 @@ class ModelEvaluation:
 
             logging.info(
                 "Checking whether previous best model exists "
-                "in GCloud Storage"
+                "in AWS S3"
             )
 
             bucket_name = (
@@ -67,8 +71,8 @@ class ModelEvaluation:
             )
 
             model_exists = (
-                self.gcloud.is_file_exist_in_gcloud(
-                    gcp_bucket_url=bucket_name,
+                self.s3.is_file_exist_in_s3(
+                    bucket_name=bucket_name,
                     filename=model_name
                 )
             )
@@ -77,32 +81,35 @@ class ModelEvaluation:
 
                 logging.info(
                     f"Previous best model found: "
-                    f"gs://{bucket_name}/{model_name}"
+                    f"s3://{bucket_name}/{model_name}"
                 )
 
             else:
 
                 logging.info(
                     f"No previous best model found: "
-                    f"gs://{bucket_name}/{model_name}"
+                    f"s3://{bucket_name}/{model_name}"
                 )
 
             return model_exists
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
     # DOWNLOAD PREVIOUS BEST MODEL
     # ============================================================
 
-    def get_best_model_from_gcloud(self) -> str:
+    def get_best_model_from_s3(self) -> str:
 
         try:
 
             logging.info(
-                "Downloading previous best model from GCloud"
+                "Downloading previous best model from AWS S3"
             )
 
             best_model_dir = (
@@ -114,15 +121,23 @@ class ModelEvaluation:
                 exist_ok=True
             )
 
-            self.gcloud.sync_file_from_gcloud(
-                self.model_evaluation_config.BUCKET_NAME,
-                self.model_evaluation_config.MODEL_NAME,
-                best_model_dir
-            )
-
             best_model_path = os.path.join(
                 best_model_dir,
                 self.model_evaluation_config.MODEL_NAME
+            )
+
+            # ----------------------------------------------------
+            # DOWNLOAD TO ACTUAL FILE PATH
+            # ----------------------------------------------------
+
+            self.s3.sync_file_from_s3(
+                bucket_name=(
+                    self.model_evaluation_config.BUCKET_NAME
+                ),
+                filename=(
+                    self.model_evaluation_config.MODEL_NAME
+                ),
+                destination=best_model_path
             )
 
             logging.info(
@@ -134,7 +149,10 @@ class ModelEvaluation:
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
     # EVALUATE MODEL
@@ -223,7 +241,10 @@ class ModelEvaluation:
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
     # INITIATE MODEL EVALUATION
@@ -270,11 +291,11 @@ class ModelEvaluation:
             )
 
             # ====================================================
-            # 2. LOAD NEWLY TRAINED BEST MODEL
+            # 2. LOAD NEWLY TRAINED MODEL
             # ====================================================
 
             logging.info(
-                "Loading newly trained best-validation model"
+                "Loading newly trained model"
             )
 
             trained_model = torch.load(
@@ -349,7 +370,7 @@ class ModelEvaluation:
                 )
 
                 best_model_path = (
-                    self.get_best_model_from_gcloud()
+                    self.get_best_model_from_s3()
                 )
 
                 logging.info(
@@ -365,7 +386,7 @@ class ModelEvaluation:
                 best_model = best_model.to(DEVICE)
 
                 # ------------------------------------------------
-                # Evaluate OLD model on VALIDATION set
+                # EVALUATE OLD MODEL ON VALIDATION SET
                 # ------------------------------------------------
 
                 logging.info(
@@ -520,4 +541,7 @@ class ModelEvaluation:
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e

@@ -1,6 +1,6 @@
 data_ingestion_config:
   zip_file_name: dataset.zip
-  bucket_name: sign-recognition
+  bucket_name: signature-recognition-assets
 
 data_transformation_config:
   img_size: 224
@@ -12,7 +12,7 @@ data_transformation_config:
   mean: [0.5]
 
 model_trainer_config:
-  epochs: 15
+  epochs: 1
   lr: 0.001
   batch_size: 8
   num_workers: 2
@@ -20,13 +20,13 @@ model_trainer_config:
 model_evaluation_config:
   batch_size: 16
   num_workers: 2
-  bucket_name: sign-recognition
+  bucket_name: signature-recognition-assets
 
 model_pusher_config:
-  bucket_name: sign-recognition
+  bucket_name: signature-recognition-assets
 
 prediction_pipeline_config:
   input_image: input.jpg
-  bucket_name: sign-recognition
+  bucket_name: signature-recognition-assets
   model_name: model.pt
   threshold: 0.3

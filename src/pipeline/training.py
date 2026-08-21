@@ -50,7 +50,7 @@ class TrainingPipeline:
         try:
 
             logging.info(
-                "Getting the dataset from GCloud Storage bucket"
+                "Getting the dataset from S3 Storage bucket"
             )
 
             data_ingestion = DataIngestion(
@@ -62,7 +62,7 @@ class TrainingPipeline:
             )
 
             logging.info(
-                "Got the dataset from GCloud Storage"
+                "Got the dataset from S3 Storage"
             )
 
             logging.info(

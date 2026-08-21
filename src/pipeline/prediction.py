@@ -6,11 +6,15 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-from src.constants import DEVICE, CONFIG_PATH, LABEL_NAME
+from src.constants import (
+    DEVICE,
+    CONFIG_PATH,
+    LABEL_NAME
+)
 from src.logger import logging
 from src.exception import CustomException
 from src.utils.main_utils import read_yaml_file
-from src.configurations.gcloud_syncer import GCloudSync
+from src.configurations.s3_syncer import S3Sync
 
 
 class PredictionPipeline:
@@ -24,10 +28,10 @@ class PredictionPipeline:
         try:
 
             # ====================================================
-            # GCLOUD
+            # AWS S3
             # ====================================================
 
-            self.gcloud = GCloudSync()
+            self.s3 = S3Sync()
 
             # ====================================================
             # CONFIG
@@ -112,7 +116,10 @@ class PredictionPipeline:
     # IMAGE LOADER
     # ============================================================
 
-    def image_loader(self, image_bytes):
+    def image_loader(
+        self,
+        image_bytes
+    ):
 
         try:
 
@@ -136,10 +143,12 @@ class PredictionPipeline:
     def get_model_path(self) -> str:
 
         """
-        Return local model path.
+        Return the local model path.
 
-        Downloads model from GCloud only if
-        it does not already exist locally.
+        If the model already exists locally,
+        use the cached copy.
+
+        Otherwise download model.pt from AWS S3.
         """
 
         try:
@@ -160,19 +169,24 @@ class PredictionPipeline:
                 return self.local_model_path
 
             # ====================================================
-            # DOWNLOAD FROM GCLOUD
+            # DOWNLOAD FROM S3
             # ====================================================
 
             logging.info(
                 f"Downloading model from "
-                f"gs://{self.bucket_name}/{self.model_name}"
+                f"s3://{self.bucket_name}/"
+                f"{self.model_name}"
             )
 
-            self.gcloud.sync_file_from_gcloud(
-                self.bucket_name,
-                self.model_name,
-                self.predict_model_dir
+            self.s3.sync_file_from_s3(
+                bucket_name=self.bucket_name,
+                filename=self.model_name,
+                destination=self.local_model_path
             )
+
+            # ====================================================
+            # VERIFY DOWNLOAD
+            # ====================================================
 
             if not os.path.isfile(
                 self.local_model_path
@@ -180,11 +194,12 @@ class PredictionPipeline:
 
                 raise FileNotFoundError(
                     "Model download completed but "
-                    "model file was not found."
+                    "model file was not found at: "
+                    f"{self.local_model_path}"
                 )
 
             logging.info(
-                f"Model downloaded to: "
+                f"Model downloaded successfully to: "
                 f"{self.local_model_path}"
             )
 
@@ -273,6 +288,8 @@ class PredictionPipeline:
             # ====================================================
             # INFERENCE
             # ====================================================
+
+            model.eval()
 
             with torch.no_grad():
 

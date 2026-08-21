@@ -111,7 +111,7 @@ st.markdown(
 # CONFIGURATION
 # ============================================================
 
-GCP_BUCKET_NAME = "sign-recognition"
+GCP_BUCKET_NAME = "signature-recognition-assets"
 DEMO_ZIP_NAME = "demo_samples.zip"
 TEMP_DIR = Path(tempfile.gettempdir())
 DEMO_ZIP_PATH = TEMP_DIR / DEMO_ZIP_NAME
