@@ -1,16 +1,24 @@
 import os
 import sys
+
 import torch
-from tqdm import tqdm
 import torch.nn as nn
+
+from tqdm import tqdm
 from torchvision import models
+from torch.utils.data import DataLoader
+
 from src.logger import logging
 from src.constants import DEVICE
-from torch.utils.data import DataLoader
 from src.exception import CustomException
 from src.utils.main_utils import load_object
+
 from src.entity.config_entity import ModelTrainerConfig
-from src.entity.artifact_entity import DataTransformationArtifacts,ModelTrainerArtifacts
+from src.entity.artifact_entity import (
+    DataTransformationArtifacts,
+    ModelTrainerArtifacts
+)
+
 
 class ModelTrainer:
 
@@ -19,15 +27,33 @@ class ModelTrainer:
         model_trainer_config: ModelTrainerConfig,
         data_transformation_artifacts: DataTransformationArtifacts
     ):
+
         self.model_trainer_config = model_trainer_config
-        self.data_transformation_artifacts = data_transformation_artifacts
+        self.data_transformation_artifacts = (
+            data_transformation_artifacts
+        )
 
-        self.learning_rate = self.model_trainer_config.LR
-        self.epochs = self.model_trainer_config.EPOCHS
-        self.batch_size = self.model_trainer_config.BATCH_SIZE
-        self.num_workers = self.model_trainer_config.NUM_WORKERS
+        self.learning_rate = (
+            self.model_trainer_config.LR
+        )
 
-    def train(
+        self.epochs = (
+            self.model_trainer_config.EPOCHS
+        )
+
+        self.batch_size = (
+            self.model_trainer_config.BATCH_SIZE
+        )
+
+        self.num_workers = (
+            self.model_trainer_config.NUM_WORKERS
+        )
+
+    # ============================================================
+    # TRAIN + VALIDATE FOR ONE EPOCH
+    # ============================================================
+
+    def train_one_epoch(
         self,
         model,
         criterion,
@@ -37,12 +63,14 @@ class ModelTrainer:
     ):
 
         try:
-            total_train_loss = 0
-            total_valid_loss = 0
 
-            # ---------------- TRAINING ----------------
+            # ====================================================
+            # TRAINING
+            # ====================================================
 
             model.train()
+
+            total_train_loss = 0.0
 
             with tqdm(
                 train_dataloader,
@@ -64,21 +92,35 @@ class ModelTrainer:
                         non_blocking=True
                     )
 
+                    optimizer.zero_grad(
+                        set_to_none=True
+                    )
+
                     output = model(images)
 
-                    loss = criterion(output, idxs)
-
-                    total_train_loss += loss.item()
+                    loss = criterion(
+                        output,
+                        idxs
+                    )
 
                     loss.backward()
 
                     optimizer.step()
 
-                    optimizer.zero_grad(set_to_none=True)
+                    total_train_loss += loss.item()
 
-            # ---------------- VALIDATION ----------------
+            train_loss = (
+                total_train_loss /
+                len(train_dataloader)
+            )
+
+            # ====================================================
+            # VALIDATION
+            # ====================================================
 
             model.eval()
+
+            total_valid_loss = 0.0
 
             with torch.no_grad():
 
@@ -104,30 +146,31 @@ class ModelTrainer:
 
                         output = model(images)
 
-                        loss = criterion(output, idxs)
+                        loss = criterion(
+                            output,
+                            idxs
+                        )
 
                         total_valid_loss += loss.item()
-
-            # Average loss per batch
-            train_loss = (
-                total_train_loss /
-                len(train_dataloader)
-            )
 
             valid_loss = (
                 total_valid_loss /
                 len(valid_dataloader)
             )
 
-            print(
-                f"Train loss: {train_loss:.4f} "
-                f"Valid loss: {valid_loss:.4f}"
-            )
+            return train_loss, valid_loss
 
         except Exception as e:
+
             raise CustomException(e, sys) from e
 
-    def initiate_model_trainer(self) -> ModelTrainerArtifacts:
+    # ============================================================
+    # INITIATE MODEL TRAINER
+    # ============================================================
+
+    def initiate_model_trainer(
+        self
+    ) -> ModelTrainerArtifacts:
 
         try:
 
@@ -135,7 +178,9 @@ class ModelTrainer:
                 "Entered initiate_model_trainer method"
             )
 
-            # ---------------- LOAD DATASETS ----------------
+            # ====================================================
+            # LOAD DATASETS
+            # ====================================================
 
             train_dataset = load_object(
                 self.data_transformation_artifacts
@@ -147,9 +192,13 @@ class ModelTrainer:
                 .valid_transformed_object
             )
 
-            logging.info("Loaded datasets")
+            logging.info(
+                "Loaded train and validation datasets"
+            )
 
-            # ---------------- DATALOADERS ----------------
+            # ====================================================
+            # DATALOADERS
+            # ====================================================
 
             train_loader = DataLoader(
                 train_dataset,
@@ -165,19 +214,46 @@ class ModelTrainer:
                 num_workers=self.num_workers
             )
 
-            logging.info("Created dataloaders")
+            logging.info(
+                "Created train and validation dataloaders"
+            )
 
-            # ---------------- MODEL ----------------
+            # ====================================================
+            # MODEL
+            # ====================================================
 
             model = models.resnet34(
                 weights=models.ResNet34_Weights.DEFAULT
             )
 
-            logging.info(
-                "Loaded pretrained ResNet34"
+            # ----------------------------------------------------
+            # Convert pretrained RGB conv1 → grayscale conv1
+            # ----------------------------------------------------
+
+            old_conv = model.conv1
+
+            model.conv1 = nn.Conv2d(
+                in_channels=1,
+                out_channels=64,
+                kernel_size=7,
+                stride=2,
+                padding=3,
+                bias=False
             )
 
-            # Replace final classification layer
+            # Preserve pretrained RGB information
+            with torch.no_grad():
+
+                model.conv1.weight.copy_(
+                    old_conv.weight.mean(
+                        dim=1,
+                        keepdim=True
+                    )
+                )
+
+            # ----------------------------------------------------
+            # Replace classifier
+            # ----------------------------------------------------
 
             model.fc = nn.Sequential(
                 nn.Dropout(0.1),
@@ -187,17 +263,21 @@ class ModelTrainer:
                 )
             )
 
-            logging.info(
-                "Updated final layer"
-            )
-
             model = model.to(DEVICE)
 
-            # ---------------- LOSS ----------------
+            logging.info(
+                "ResNet34 model created with 1-channel input"
+            )
+
+            # ====================================================
+            # LOSS
+            # ====================================================
 
             criterion = nn.CrossEntropyLoss()
 
-            # ---------------- OPTIMIZER ----------------
+            # ====================================================
+            # OPTIMIZER
+            # ====================================================
 
             optimizer = torch.optim.SGD(
                 model.parameters(),
@@ -205,35 +285,97 @@ class ModelTrainer:
                 momentum=0.9
             )
 
+            # ====================================================
+            # BEST MODEL TRACKING
+            # ====================================================
+
+            best_valid_loss = float("inf")
+
+            best_model_state = None
+
+            # ====================================================
+            # TRAINING LOOP
+            # ====================================================
+
             logging.info(
                 "Model training started"
             )
 
-            # ---------------- TRAINING ----------------
-
             for epoch in range(self.epochs):
 
                 print(
-                    f"Epoch {epoch + 1}/{self.epochs}"
+                    f"\nEpoch {epoch + 1}/{self.epochs}"
                 )
 
                 logging.info(
-                    f"Training epoch {epoch + 1}"
+                    f"Starting epoch {epoch + 1}"
                 )
 
-                self.train(
-                    model,
-                    criterion,
-                    optimizer,
-                    train_loader,
-                    valid_loader
+                train_loss, valid_loss = (
+                    self.train_one_epoch(
+                        model=model,
+                        criterion=criterion,
+                        optimizer=optimizer,
+                        train_dataloader=train_loader,
+                        valid_dataloader=valid_loader
+                    )
                 )
 
-            logging.info(
-                "Model training completed"
+                print(
+                    f"Train loss: {train_loss:.4f} "
+                    f"Valid loss: {valid_loss:.4f}"
+                )
+
+                logging.info(
+                    f"Epoch {epoch + 1} | "
+                    f"Train loss: {train_loss:.4f} | "
+                    f"Valid loss: {valid_loss:.4f}"
+                )
+
+                # =================================================
+                # SAVE BEST MODEL BASED ON VALIDATION LOSS
+                # =================================================
+
+                if valid_loss < best_valid_loss:
+
+                    best_valid_loss = valid_loss
+
+                    best_model_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value
+                        in model.state_dict().items()
+                    }
+
+                    logging.info(
+                        f"New best model found at epoch "
+                        f"{epoch + 1} with validation loss "
+                        f"{valid_loss:.4f}"
+                    )
+
+            # ====================================================
+            # LOAD BEST MODEL
+            # ====================================================
+
+            if best_model_state is None:
+
+                raise RuntimeError(
+                    "Best model was not created."
+                )
+
+            model.load_state_dict(
+                best_model_state
             )
 
-            # ---------------- SAVE MODEL ----------------
+            model = model.to(DEVICE)
+
+            logging.info(
+                f"Best validation loss: "
+                f"{best_valid_loss:.4f}"
+            )
+
+            # ====================================================
+            # SAVE BEST MODEL
+            # ====================================================
 
             os.makedirs(
                 self.model_trainer_config
@@ -248,15 +390,20 @@ class ModelTrainer:
             )
 
             logging.info(
-                f"Saved trained model at "
+                f"Best model saved at: "
                 f"{self.model_trainer_config.TRAINED_MODEL_PATH}"
             )
 
-            # ---------------- CREATE ARTIFACT ----------------
+            # ====================================================
+            # CREATE ARTIFACT
+            # ====================================================
 
-            model_trainer_artifacts = ModelTrainerArtifacts(
-                trained_model_path=
-                self.model_trainer_config.TRAINED_MODEL_PATH
+            model_trainer_artifacts = (
+                ModelTrainerArtifacts(
+                    trained_model_path=
+                    self.model_trainer_config
+                    .TRAINED_MODEL_PATH
+                )
             )
 
             logging.info(
@@ -271,4 +418,5 @@ class ModelTrainer:
             return model_trainer_artifacts
 
         except Exception as e:
+
             raise CustomException(e, sys) from e

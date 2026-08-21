@@ -1,5 +1,6 @@
 import os
 import sys
+from io import BytesIO
 
 import torch
 from PIL import Image
@@ -16,13 +17,96 @@ class PredictionPipeline:
 
     def __init__(self):
 
-        self.gcloud = GCloudSync()
+        logging.info(
+            "Initializing PredictionPipeline"
+        )
 
-        self.config = read_yaml_file(CONFIG_PATH)
+        try:
 
-        self.img_size = self.config[
-            "data_transformation_config"
-        ]["img_size"]
+            # ====================================================
+            # GCLOUD
+            # ====================================================
+
+            self.gcloud = GCloudSync()
+
+            # ====================================================
+            # CONFIG
+            # ====================================================
+
+            self.config = read_yaml_file(
+                CONFIG_PATH
+            )
+
+            # ====================================================
+            # DATA TRANSFORMATION CONFIG
+            # ====================================================
+
+            transformation_config = self.config[
+                "data_transformation_config"
+            ]
+
+            self.img_size = transformation_config[
+                "img_size"
+            ]
+
+            self.mean = transformation_config[
+                "mean"
+            ]
+
+            self.std = transformation_config[
+                "std"
+            ]
+
+            # ====================================================
+            # PREDICTION CONFIG
+            # ====================================================
+
+            prediction_config = self.config[
+                "prediction_pipeline_config"
+            ]
+
+            self.bucket_name = prediction_config[
+                "bucket_name"
+            ]
+
+            self.model_name = prediction_config[
+                "model_name"
+            ]
+
+            self.threshold = prediction_config[
+                "threshold"
+            ]
+
+            # ====================================================
+            # LOCAL MODEL CACHE
+            # ====================================================
+
+            self.predict_model_dir = os.path.join(
+                os.getcwd(),
+                "artifacts",
+                "PredictModel"
+            )
+
+            os.makedirs(
+                self.predict_model_dir,
+                exist_ok=True
+            )
+
+            self.local_model_path = os.path.join(
+                self.predict_model_dir,
+                self.model_name
+            )
+
+            logging.info(
+                "PredictionPipeline initialized successfully"
+            )
+
+        except Exception as e:
+
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
     # IMAGE LOADER
@@ -30,176 +114,99 @@ class PredictionPipeline:
 
     def image_loader(self, image_bytes):
 
-        """
-        Load image bytes and convert them into a PIL image.
-
-        Returns:
-            PIL.Image.Image: Loaded RGB image
-        """
-
-        logging.info(
-            "Entered the image_loader method "
-            "of PredictionPipeline class"
-        )
-
         try:
 
-            logging.info(
-                "Loading image bytes and saving image locally"
-            )
-
-            input_image = self.config[
-                "prediction_pipeline_config"
-            ]["input_image"]
-
-            with open(input_image, "wb") as image:
-
-                image.write(image_bytes)
-
-            path = os.path.join(
-                os.getcwd(),
-                input_image
-            )
-
-            image = Image.open(path).convert("RGB")
-
-            logging.info(
-                f"Image saved successfully at: {path}"
-            )
-
-            logging.info(
-                "Exited the image_loader method "
-                "of PredictionPipeline class"
-            )
+            image = Image.open(
+                BytesIO(image_bytes)
+            ).convert("RGB")
 
             return image
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
-    # GET MODEL FROM GCLOUD
+    # GET MODEL PATH
     # ============================================================
 
-    def get_model_from_gcloud(self) -> str:
+    def get_model_path(self) -> str:
 
         """
-        Download the best model from GCloud Storage.
+        Return local model path.
 
-        Returns:
-            str: Local path of downloaded model
+        Downloads model from GCloud only if
+        it does not already exist locally.
         """
-
-        logging.info(
-            "Entered the get_model_from_gcloud method "
-            "of PredictionPipeline class"
-        )
 
         try:
 
+            # ====================================================
+            # LOCAL CACHE
+            # ====================================================
+
+            if os.path.isfile(
+                self.local_model_path
+            ):
+
+                logging.info(
+                    f"Using cached model: "
+                    f"{self.local_model_path}"
+                )
+
+                return self.local_model_path
+
+            # ====================================================
+            # DOWNLOAD FROM GCLOUD
+            # ====================================================
+
             logging.info(
-                "Loading the best model from GCloud bucket"
+                f"Downloading model from "
+                f"gs://{self.bucket_name}/{self.model_name}"
             )
-
-            predict_model_path = os.path.join(
-                os.getcwd(),
-                "artifacts",
-                "PredictModel"
-            )
-
-            os.makedirs(
-                predict_model_path,
-                exist_ok=True
-            )
-
-            bucket_name = self.config[
-                "prediction_pipeline_config"
-            ]["bucket_name"]
-
-            model_name = self.config[
-                "prediction_pipeline_config"
-            ]["model_name"]
 
             self.gcloud.sync_file_from_gcloud(
-                bucket_name,
-                model_name,
-                predict_model_path
+                self.bucket_name,
+                self.model_name,
+                self.predict_model_dir
             )
 
-            best_model_path = os.path.join(
-                predict_model_path,
-                model_name
-            )
+            if not os.path.isfile(
+                self.local_model_path
+            ):
+
+                raise FileNotFoundError(
+                    "Model download completed but "
+                    "model file was not found."
+                )
 
             logging.info(
-                f"Model downloaded to: {best_model_path}"
+                f"Model downloaded to: "
+                f"{self.local_model_path}"
             )
 
-            logging.info(
-                "Exited the get_model_from_gcloud method "
-                "of PredictionPipeline class"
-            )
-
-            return best_model_path
+            return self.local_model_path
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
-    # PREDICTION
+    # PREPROCESS IMAGE
     # ============================================================
 
-    def prediction(
+    def preprocess_image(
         self,
-        best_model_path: str,
         image
-    ) -> str:
-
-        """
-        Load the trained model and perform prediction.
-
-        Returns:
-            str: Predicted class name
-        """
-
-        logging.info(
-            "Entered the prediction method "
-            "of PredictionPipeline class"
-        )
+    ) -> torch.Tensor:
 
         try:
-
-            # ----------------------------------------------------
-            # LOAD MODEL
-            # ----------------------------------------------------
-
-            logging.info(
-                "Loading the best model"
-            )
-
-            model = torch.load(
-                best_model_path,
-                map_location=DEVICE,
-                weights_only=False
-            )
-
-            model.to(DEVICE)
-
-            model.eval()
-
-            logging.info(
-                "Best model loaded successfully"
-            )
-
-            # ----------------------------------------------------
-            # IMAGE PREPROCESSING
-            # ----------------------------------------------------
-
-            logging.info(
-                "Loading the image and preprocessing it"
-            )
 
             preprocess = transforms.Compose([
 
@@ -211,160 +218,147 @@ class PredictionPipeline:
                 ),
 
                 transforms.Grayscale(
-                    num_output_channels=3
+                    num_output_channels=1
                 ),
 
                 transforms.ToTensor(),
 
+                transforms.Normalize(
+                    mean=self.mean,
+                    std=self.std
+                )
+
             ])
 
-            image = preprocess(image)
-
-            # ----------------------------------------------------
-            # ADD BATCH DIMENSION
-            # ----------------------------------------------------
-
-            logging.info(
-                "Converting image to PyTorch tensor "
-                "and sending it to device"
+            image_tensor = preprocess(
+                image
             )
 
-            image = image.unsqueeze(0)
+            image_tensor = image_tensor.unsqueeze(0)
 
-            image = image.to(
+            return image_tensor
+
+        except Exception as e:
+
+            raise CustomException(
+                e,
+                sys
+            ) from e
+
+    # ============================================================
+    # PREDICT USING ALREADY LOADED MODEL
+    # ============================================================
+
+    def prediction(
+        self,
+        model,
+        image
+    ) -> dict:
+
+        try:
+
+            # ====================================================
+            # PREPROCESS
+            # ====================================================
+
+            image_tensor = self.preprocess_image(
+                image
+            )
+
+            image_tensor = image_tensor.to(
                 DEVICE,
                 non_blocking=True
             )
 
-            # ----------------------------------------------------
-            # MODEL PREDICTION
-            # ----------------------------------------------------
-
-            logging.info(
-                "Making prediction"
-            )
+            # ====================================================
+            # INFERENCE
+            # ====================================================
 
             with torch.no_grad():
 
-                logits = model(image)
+                logits = model(
+                    image_tensor
+                )
 
                 probabilities = torch.softmax(
                     logits,
                     dim=1
                 )
 
-                predicted_index = torch.argmax(
+                confidence, predicted_index = torch.max(
                     probabilities,
                     dim=1
                 )
 
-            predicted_label = predicted_index.item()
+            confidence = confidence.item()
 
-            logging.info(
-                f"Predicted label index: {predicted_label}"
-            )
+            predicted_index = predicted_index.item()
 
-            # ----------------------------------------------------
-            # MAP INDEX TO CLASS NAME
-            # ----------------------------------------------------
+            # ====================================================
+            # THRESHOLD
+            # ====================================================
 
-            logging.info(
-                "Mapping predicted label "
-                "to corresponding class name"
-            )
+            if confidence < self.threshold:
 
-            predicted_class_name = LABEL_NAME[
-                predicted_label
-            ]
+                predicted_class = "Unknown"
 
-            logging.info(
-                f"Predicted class name: "
-                f"{predicted_class_name}"
-            )
+            else:
 
-            logging.info(
-                "Exited the prediction method "
-                "of PredictionPipeline class"
-            )
+                predicted_class = LABEL_NAME[
+                    predicted_index
+                ]
 
-            return predicted_class_name
+            return {
+                "predicted_class": predicted_class,
+                "confidence": confidence,
+                "predicted_index": predicted_index
+            }
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e
 
     # ============================================================
-    # RUN COMPLETE PREDICTION PIPELINE
+    # RUN PIPELINE
     # ============================================================
 
     def run_pipeline(
         self,
-        data
+        image_bytes,
+        model
     ):
-
-        """
-        Run the complete prediction pipeline.
-
-        Flow:
-
-            image bytes
-                  ↓
-            load image
-                  ↓
-            download model from GCloud
-                  ↓
-            load model
-                  ↓
-            preprocess image
-                  ↓
-            make prediction
-                  ↓
-            return predicted class
-        """
-
-        logging.info(
-            "Entered the run_pipeline method "
-            "of PredictionPipeline class"
-        )
 
         try:
 
-            # ----------------------------------------------------
-            # STEP 1: LOAD INPUT IMAGE
-            # ----------------------------------------------------
+            # ====================================================
+            # LOAD IMAGE
+            # ====================================================
 
             image = self.image_loader(
-                data
+                image_bytes
             )
 
-            # ----------------------------------------------------
-            # STEP 2: DOWNLOAD MODEL
-            # ----------------------------------------------------
+            # ====================================================
+            # PREDICT
+            # ====================================================
 
-            best_model_path = (
-                self.get_model_from_gcloud()
-            )
-
-            # ----------------------------------------------------
-            # STEP 3: MAKE PREDICTION
-            # ----------------------------------------------------
-
-            predicted_class = self.prediction(
-                best_model_path,
-                image
+            result = self.prediction(
+                model=model,
+                image=image
             )
 
             logging.info(
-                f"Final prediction: {predicted_class}"
+                f"Prediction result: {result}"
             )
 
-            logging.info(
-                "Exited the run_pipeline method "
-                "of PredictionPipeline class"
-            )
-
-            return predicted_class
+            return result
 
         except Exception as e:
 
-            raise CustomException(e, sys) from e
+            raise CustomException(
+                e,
+                sys
+            ) from e

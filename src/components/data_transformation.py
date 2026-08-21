@@ -44,6 +44,8 @@ class DataTransformation:
             )
 
             data_transform = T.Compose([
+                T.Grayscale(num_output_channels=1),
+
                 T.Resize(
                     size=(self.img_size, self.img_size)
                 ),

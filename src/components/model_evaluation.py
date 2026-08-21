@@ -30,36 +30,26 @@ class ModelEvaluation:
         model_trainer_artifacts: ModelTrainerArtifacts,
         data_transformation_artifacts: DataTransformationArtifacts
     ):
-        """
-        :param model_evaluation_config:
-            Configuration for model evaluation
 
-        :param model_trainer_artifacts:
-            Output reference of model trainer artifact stage
+        self.model_evaluation_config = (
+            model_evaluation_config
+        )
 
-        :param data_transformation_artifacts:
-            Output reference of data transformation artifact stage
-        """
+        self.model_trainer_artifacts = (
+            model_trainer_artifacts
+        )
 
-        self.model_evaluation_config = model_evaluation_config
-        self.model_trainer_artifacts = model_trainer_artifacts
-        self.data_transformation_artifacts = data_transformation_artifacts
+        self.data_transformation_artifacts = (
+            data_transformation_artifacts
+        )
 
         self.gcloud = GCloudSync()
 
     # ============================================================
-    # CHECK WHETHER MODEL EXISTS IN GCLOUD
+    # CHECK WHETHER PREVIOUS BEST MODEL EXISTS
     # ============================================================
 
     def is_best_model_available(self) -> bool:
-        """
-        Check whether a previous best model exists
-        in GCloud Storage.
-
-        Returns:
-            True  -> model exists
-            False -> model does not exist
-        """
 
         try:
 
@@ -86,14 +76,14 @@ class ModelEvaluation:
             if model_exists:
 
                 logging.info(
-                    f"Previous best model found in GCloud: "
+                    f"Previous best model found: "
                     f"gs://{bucket_name}/{model_name}"
                 )
 
             else:
 
                 logging.info(
-                    f"No previous best model found in GCloud: "
+                    f"No previous best model found: "
                     f"gs://{bucket_name}/{model_name}"
                 )
 
@@ -104,46 +94,40 @@ class ModelEvaluation:
             raise CustomException(e, sys) from e
 
     # ============================================================
-    # GET BEST MODEL FROM GCLOUD
+    # DOWNLOAD PREVIOUS BEST MODEL
     # ============================================================
 
     def get_best_model_from_gcloud(self) -> str:
-        """
-        Download the previous best model from GCloud Storage.
-
-        Returns:
-            Local path of downloaded model.
-        """
 
         try:
 
             logging.info(
-                "Entered get_best_model_from_gcloud method"
+                "Downloading previous best model from GCloud"
+            )
+
+            best_model_dir = (
+                self.model_evaluation_config.BEST_MODEL_DIR
             )
 
             os.makedirs(
-                self.model_evaluation_config.BEST_MODEL_DIR,
+                best_model_dir,
                 exist_ok=True
             )
 
             self.gcloud.sync_file_from_gcloud(
                 self.model_evaluation_config.BUCKET_NAME,
                 self.model_evaluation_config.MODEL_NAME,
-                self.model_evaluation_config.BEST_MODEL_DIR
+                best_model_dir
             )
 
             best_model_path = os.path.join(
-                self.model_evaluation_config.BEST_MODEL_DIR,
+                best_model_dir,
                 self.model_evaluation_config.MODEL_NAME
             )
 
             logging.info(
                 f"Previous best model downloaded to: "
                 f"{best_model_path}"
-            )
-
-            logging.info(
-                "Exited get_best_model_from_gcloud method"
             )
 
             return best_model_path
@@ -160,34 +144,27 @@ class ModelEvaluation:
         self,
         model,
         criterion,
-        test_dataloader
+        dataloader,
+        phase="Validation"
     ):
-        """
-        Evaluate the given model on the test dataset.
-
-        Returns:
-            Average test loss.
-        """
 
         try:
 
-            logging.info(
-                "Entered evaluate method"
-            )
-
-            total_test_loss = 0.0
-
             model.eval()
+
+            total_loss = 0.0
+            correct = 0
+            total = 0
 
             with torch.no_grad():
 
                 with tqdm(
-                    test_dataloader,
+                    dataloader,
                     unit="batch",
                     leave=False
                 ) as pbar:
 
-                    pbar.set_description("Testing")
+                    pbar.set_description(phase)
 
                     for images, idxs in pbar:
 
@@ -208,22 +185,41 @@ class ModelEvaluation:
                             idxs
                         )
 
-                        total_test_loss += loss.item()
+                        total_loss += loss.item()
 
-            test_loss = (
-                total_test_loss /
-                len(test_dataloader)
+                        predictions = torch.argmax(
+                            output,
+                            dim=1
+                        )
+
+                        correct += (
+                            predictions == idxs
+                        ).sum().item()
+
+                        total += idxs.size(0)
+
+            average_loss = (
+                total_loss /
+                len(dataloader)
+            )
+
+            accuracy = (
+                correct / total
+                if total > 0
+                else 0.0
             )
 
             logging.info(
-                f"Test loss: {test_loss:.4f}"
+                f"{phase} loss: "
+                f"{average_loss:.4f}"
             )
 
             logging.info(
-                "Exited evaluate method"
+                f"{phase} accuracy: "
+                f"{accuracy:.4f}"
             )
 
-            return test_loss
+            return average_loss, accuracy
 
         except Exception as e:
 
@@ -237,96 +233,90 @@ class ModelEvaluation:
         self
     ) -> ModelEvaluationArtifacts:
 
-        """
-        Initiate all steps of model evaluation.
-
-        Logic:
-
-        1. Evaluate the newly trained model.
-        2. Check whether a previous model exists in GCloud.
-        3. If no previous model exists:
-               accept the newly trained model.
-        4. If previous model exists:
-               download it,
-               evaluate it,
-               compare losses.
-        5. Accept new model only if it performs better.
-        """
-
-        logging.info(
-            "Entered initiate_model_evaluation method"
-        )
-
         try:
 
-            # ====================================================
-            # 1. LOAD TEST DATASET
-            # ====================================================
-
             logging.info(
-                "Loading test dataset"
-            )
-
-            test_dataset = load_object(
-                self.data_transformation_artifacts
-                .test_transformed_object
-            )
-
-            test_loader = DataLoader(
-                test_dataset,
-                shuffle=False,
-                batch_size=(
-                    self.model_evaluation_config.BATCH_SIZE
-                ),
-                num_workers=(
-                    self.model_evaluation_config.NUM_WORKERS
-                )
+                "Entered initiate_model_evaluation method"
             )
 
             criterion = torch.nn.CrossEntropyLoss()
 
             # ====================================================
-            # 2. LOAD CURRENTLY TRAINED MODEL
+            # 1. LOAD VALIDATION DATASET
             # ====================================================
 
             logging.info(
-                "Loading currently trained model"
+                "Loading validation dataset"
+            )
+
+            valid_dataset = load_object(
+                self.data_transformation_artifacts
+                .valid_transformed_object
+            )
+
+            valid_loader = DataLoader(
+                valid_dataset,
+                batch_size=(
+                    self.model_evaluation_config.BATCH_SIZE
+                ),
+                shuffle=False,
+                num_workers=(
+                    self.model_evaluation_config.NUM_WORKERS
+                )
+            )
+
+            logging.info(
+                "Validation dataset loaded"
+            )
+
+            # ====================================================
+            # 2. LOAD NEWLY TRAINED BEST MODEL
+            # ====================================================
+
+            logging.info(
+                "Loading newly trained best-validation model"
             )
 
             trained_model = torch.load(
-                self.model_trainer_artifacts.trained_model_path,
+                self.model_trainer_artifacts
+                .trained_model_path,
                 map_location=DEVICE,
                 weights_only=False
             )
 
-            trained_model.eval()
+            trained_model = trained_model.to(DEVICE)
 
             # ====================================================
-            # 3. EVALUATE CURRENTLY TRAINED MODEL
-            # ====================================================
-
-            logging.info(
-                "Evaluating currently trained model"
-            )
-
-            trained_model_loss = self.evaluate(
-                model=trained_model,
-                criterion=criterion,
-                test_dataloader=test_loader
-            )
-
-            logging.info(
-                f"Currently trained model loss: "
-                f"{trained_model_loss:.4f}"
-            )
-
-            # ====================================================
-            # 4. CHECK WHETHER PREVIOUS MODEL EXISTS
+            # 3. EVALUATE NEW MODEL ON VALIDATION SET
             # ====================================================
 
             logging.info(
-                "Checking whether previous best model exists"
+                "Evaluating newly trained model "
+                "on validation dataset"
             )
+
+            trained_valid_loss, trained_valid_accuracy = (
+                self.evaluate(
+                    model=trained_model,
+                    criterion=criterion,
+                    dataloader=valid_loader,
+                    phase="Validation - New Model"
+                )
+            )
+
+            logging.info(
+                f"New model validation loss: "
+                f"{trained_valid_loss:.4f}"
+            )
+
+            logging.info(
+                f"New model validation accuracy: "
+                f"{trained_valid_accuracy:.4f}"
+            )
+
+            # ====================================================
+            # 4. CHECK PREVIOUS BEST MODEL
+            # ====================================================
 
             best_model_exists = (
                 self.is_best_model_available()
@@ -339,42 +329,28 @@ class ModelEvaluation:
             if not best_model_exists:
 
                 logging.info(
-                    "No previous best model found."
+                    "No previous best model exists."
                 )
 
                 logging.info(
-                    "This is the first training run."
-                )
-
-                logging.info(
-                    "Automatically accepting "
-                    "the currently trained model."
+                    "First training run detected."
                 )
 
                 is_model_accepted = True
 
             # ====================================================
-            # 6. PREVIOUS MODEL EXISTS
+            # 6. COMPARE WITH PREVIOUS BEST MODEL
             # ====================================================
 
             else:
 
                 logging.info(
-                    "Previous best model found."
-                )
-
-                logging.info(
-                    "Downloading previous best model "
-                    "for comparison."
+                    "Previous best model exists."
                 )
 
                 best_model_path = (
                     self.get_best_model_from_gcloud()
                 )
-
-                # =================================================
-                # LOAD PREVIOUS BEST MODEL
-                # =================================================
 
                 logging.info(
                     "Loading previous best model"
@@ -386,49 +362,58 @@ class ModelEvaluation:
                     weights_only=False
                 )
 
-                best_model.eval()
+                best_model = best_model.to(DEVICE)
+
+                # ------------------------------------------------
+                # Evaluate OLD model on VALIDATION set
+                # ------------------------------------------------
+
+                logging.info(
+                    "Evaluating previous best model "
+                    "on validation dataset"
+                )
+
+                best_valid_loss, best_valid_accuracy = (
+                    self.evaluate(
+                        model=best_model,
+                        criterion=criterion,
+                        dataloader=valid_loader,
+                        phase="Validation - Previous Model"
+                    )
+                )
+
+                logging.info(
+                    f"Previous model validation loss: "
+                    f"{best_valid_loss:.4f}"
+                )
+
+                logging.info(
+                    f"Previous model validation accuracy: "
+                    f"{best_valid_accuracy:.4f}"
+                )
 
                 # =================================================
-                # EVALUATE PREVIOUS BEST MODEL
+                # COMPARE VALIDATION LOSSES
                 # =================================================
 
                 logging.info(
-                    "Evaluating previous best model"
+                    "Comparing new model and previous model "
+                    "using validation loss"
                 )
 
-                best_model_loss = self.evaluate(
-                    model=best_model,
-                    criterion=criterion,
-                    test_dataloader=test_loader
-                )
-
-                logging.info(
-                    f"Previous best model loss: "
-                    f"{best_model_loss:.4f}"
-                )
-
-                # =================================================
-                # COMPARE BOTH MODELS
-                # =================================================
-
-                logging.info(
-                    "Comparing currently trained model "
-                    "with previous best model"
-                )
-
-                if trained_model_loss < best_model_loss:
+                if trained_valid_loss < best_valid_loss:
 
                     is_model_accepted = True
 
                     logging.info(
-                        f"Currently trained model loss "
-                        f"({trained_model_loss:.4f}) is lower than "
-                        f"previous best model loss "
-                        f"({best_model_loss:.4f})."
+                        f"New model validation loss "
+                        f"({trained_valid_loss:.4f}) is lower than "
+                        f"previous model validation loss "
+                        f"({best_valid_loss:.4f})."
                     )
 
                     logging.info(
-                        "Currently trained model accepted."
+                        "New model ACCEPTED."
                     )
 
                 else:
@@ -436,18 +421,84 @@ class ModelEvaluation:
                     is_model_accepted = False
 
                     logging.info(
-                        f"Currently trained model loss "
-                        f"({trained_model_loss:.4f}) is not lower "
-                        f"than previous best model loss "
-                        f"({best_model_loss:.4f})."
+                        f"New model validation loss "
+                        f"({trained_valid_loss:.4f}) is NOT lower than "
+                        f"previous model validation loss "
+                        f"({best_valid_loss:.4f})."
                     )
 
                     logging.info(
-                        "Currently trained model rejected."
+                        "New model REJECTED."
                     )
 
             # ====================================================
-            # 7. CREATE MODEL EVALUATION ARTIFACT
+            # 7. FINAL TEST
+            # ====================================================
+
+            if is_model_accepted:
+
+                logging.info(
+                    "Accepted model will now be evaluated "
+                    "on the TEST dataset."
+                )
+
+                test_dataset = load_object(
+                    self.data_transformation_artifacts
+                    .test_transformed_object
+                )
+
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=(
+                        self.model_evaluation_config.BATCH_SIZE
+                    ),
+                    shuffle=False,
+                    num_workers=(
+                        self.model_evaluation_config.NUM_WORKERS
+                    )
+                )
+
+                test_loss, test_accuracy = (
+                    self.evaluate(
+                        model=trained_model,
+                        criterion=criterion,
+                        dataloader=test_loader,
+                        phase="Final Test"
+                    )
+                )
+
+                logging.info(
+                    f"FINAL TEST LOSS: "
+                    f"{test_loss:.4f}"
+                )
+
+                logging.info(
+                    f"FINAL TEST ACCURACY: "
+                    f"{test_accuracy:.4f}"
+                )
+
+                print(
+                    f"\nFinal Test Loss: "
+                    f"{test_loss:.4f}"
+                )
+
+                print(
+                    f"Final Test Accuracy: "
+                    f"{test_accuracy * 100:.2f}%"
+                )
+
+            else:
+
+                logging.info(
+                    "New model rejected."
+                )
+
+                logging.info(
+                    "Test dataset will NOT be used."
+                )
+
+            # ====================================================
+            # 8. CREATE ARTIFACT
             # ====================================================
 
             model_evaluation_artifacts = (
