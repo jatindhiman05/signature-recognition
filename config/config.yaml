@@ -1,0 +1,32 @@
+data_ingestion_config:
+  zip_file_name: dataset.zip
+  bucket_name: sign-recognition
+
+data_transformation_config:
+  img_size: 224
+  degree_n: -20
+  degree_p: +20
+  train_ratio: 0.6
+  valid_ratio: 0.3
+  std: [0.229, 0.224, 0.225]
+  mean: [0.485, 0.456, 0.406]
+
+model_trainer_config:
+  epochs: 30
+  lr: 0.001
+  batch_size: 32
+  num_workers: 4
+
+model_evaluation_config:
+  batch_size: 32
+  num_workers: 4
+  bucket_name: sign-recognition
+
+model_pusher_config:
+  bucket_name: sign-recognition
+
+prediction_pipeline_config:
+  input_image: input.jpg
+  bucket_name: sign-recognition
+  model_name: model.pt
+  threshold: 0.3
