@@ -16,3 +16,4 @@ dill==0.3.5.1
 albumentations
 python-multipart
 google-cloud-storage
+streamlit
